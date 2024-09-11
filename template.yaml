@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  sam-minsait-almeidabrito-fullstack
+Transform:
+  - AWS::Serverless-2016-10-31
+
+Resources:
+  #########################################################
+  ##                  BUCKET WEB APP
+  #########################################################
+
+  bucketS3WebSite:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "webapp-minsait-almeidabrito-${AWS::Region}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  bucketS3WebSitePolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref bucketS3WebSite
+      PolicyDocument:
+        Version: "2012-10-17"
+        Id: PolicyForCloudFrontWebApp
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub
+              - "arn:aws:s3:::${Bucket}/*"
+              - Bucket: !Ref bucketS3WebSite
+
+  #########################################################
+  ##                  CLOUDFRONT WEB APP
+  #########################################################
+
+  cloudFrontWebAppOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "webapp-control-origin-almeidabrito-${AWS::Region}-${AWS::AccountId}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  cloudFrontWebAppDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt bucketS3WebSite.RegionalDomainName
+            Id: !Sub "webapp-origin-s3-almeidabrito-${AWS::Region}-${AWS::AccountId}"
+            OriginAccessControlId: !GetAtt cloudFrontWebAppOriginAccessControl.Id
+            S3OriginConfig: {}
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          TargetOriginId: !Sub "webapp-origin-s3-almeidabrito-${AWS::Region}-${AWS::AccountId}"
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_All
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: whitelist
+            Locations:
+              - US
+              - BR
+
+  #########################################################
+  ##                  DYNAMODB TABLE
+  #########################################################
+
+  dynamoDBMinsaitAlmeidaBritoFullstackTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: uuid
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+  #########################################################
+  ##                  BUCKET S3 OBJECTS
+  #########################################################
+
+  bucketS3RepositoryObjects:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "repository-minsait-almeidabrito-${AWS::Region}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  bucketS3RepositoryObjectsPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref bucketS3RepositoryObjects
+      PolicyDocument:
+        Version: "2012-10-17"
+        Id: PolicyForRepositoryPublicAccess
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub
+              - "arn:aws:s3:::${Bucket}/*"
+              - Bucket: !Ref bucketS3RepositoryObjects
+
+  #########################################################
+  ##                  API GATEWAY
+  #########################################################
+
+  apiRestFullstackAlmeidaBrito:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: v1
+
+  #########################################################
+  ##                  LAMBDA FUNCTIONS
+  #########################################################
+
+  putObjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./src
+      Handler: index.putObjectController
+      MemorySize: 512
+      Description: Put Object in Bucket Repository AlmeidaBrito
+      Environment:
+        Variables:
+          BUCKET_STORAGE: !Ref bucketS3RepositoryObjects
+          OBJECT_TABLE: !Ref dynamoDBMinsaitAlmeidaBritoFullstackTable
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref dynamoDBMinsaitAlmeidaBritoFullstackTable
+        - S3WritePolicy:
+            BucketName: !Ref bucketS3RepositoryObjects
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /
+            Method: POST
+            RestApiId: !Ref apiRestFullstackAlmeidaBrito
+    Metadata:
+      BuildProperties:
+        Minify: true
+
+  #########################################################
+  ##                  COGNITO USER POOL
+  #########################################################
+
+  cognitoAuthorizerUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: cognito-fullstack-almeidabrito-user-pool
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+      Schema:
+        - AttributeDataType: String
+          Name: name
+          Mutable: true
+          Required: true
+        - AttributeDataType: String
+          Name: phone_number
+          Mutable: true
+          Required: true
+        - AttributeDataType: String
+          Name: email
+          Mutable: false
+          Required: true
+        - AttributeDataType: String
+          Name: birthdate
+          Mutable: false
+          Required: false
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: false
+
+Outputs:
+  WebAppDomain:
+    Value: !GetAtt cloudFrontWebAppDistribution.DomainName
+  ApiRestURL:
+    Value: !Sub "https://${apiRestFullstackAlmeidaBrito}.execute-api.${AWS::Region}.amazonaws.com/v1/"
